@@ -368,8 +368,8 @@ const PLATFORMS = [{
   color: "#6B7785"
 }];
 const platMeta = id => PLATFORMS.find(p => p.id === id) || PLATFORMS[4];
-const baht = n => "฿" + Math.round(Number(n) || 0).toLocaleString("th-TH");
-const bahtExact = n => "฿" + (Number(n) || 0).toLocaleString("th-TH", {
+const baht = n => "฿\u2009" + Math.round(Number(n) || 0).toLocaleString("th-TH");
+const bahtExact = n => "฿\u2009" + (Number(n) || 0).toLocaleString("th-TH", {
   maximumFractionDigits: 2
 });
 const todayStr = () => new Date().toISOString().slice(0, 10);
@@ -446,6 +446,15 @@ const SAMPLE_ITEMS = () => {
 };
 const SAMPLE_BUDGET = () => ({
   salary: 32000,
+  income: [{
+    id: uid(),
+    name: "ค่า พ.ต.ส.",
+    amount: 1500
+  }, {
+    id: uid(),
+    name: "ค่า OT",
+    amount: 2500
+  }],
   fixed: [{
     id: uid(),
     name: "ค่าหอ/บ้าน",
@@ -492,7 +501,8 @@ function App() {
   const [items, setItems] = useState([]);
   const [budget, setBudget] = useState({
     salary: 0,
-    fixed: []
+    fixed: [],
+    income: []
   });
   const [ready, setReady] = useState(false);
   const [modal, setModal] = useState(null);
@@ -501,6 +511,9 @@ function App() {
   const [pin, setPin] = useState(null); // รหัสที่ตั้งไว้ (null = ยังโหลดไม่เสร็จ, "" = ยังไม่เคยตั้ง)
   const [unlocked, setUnlocked] = useState(false);
   const loaded = useRef(false);
+  const fileInputRef = useRef(null);
+  const [pendingImport, setPendingImport] = useState(null);
+  const [importError, setImportError] = useState("");
 
   /* load */
   useEffect(() => {
@@ -623,14 +636,107 @@ function App() {
     ...b,
     fixed: b.fixed.filter(f => f.id !== id)
   }));
+  const addIncome = (name, amount, irregular) => setBudget(b => ({
+    ...b,
+    income: [...(b.income || []), {
+      id: uid(),
+      name,
+      amount: Number(amount) || 0,
+      irregular: !!irregular
+    }]
+  }));
+  const updateIncome = (id, patch) => setBudget(b => ({
+    ...b,
+    income: (b.income || []).map(f => f.id === id ? {
+      ...f,
+      ...patch
+    } : f)
+  }));
+  const removeIncome = id => setBudget(b => ({
+    ...b,
+    income: (b.income || []).filter(f => f.id !== id)
+  }));
 
-  /* money math */
+  /* สำรอง/กู้ข้อมูล */
+  const exportData = () => {
+    try {
+      const payload = {
+        app: "pon-ploen-backup",
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        items,
+        budget
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], {
+        type: "application/json"
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `pon-ploen-backup-${todayStr()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) {}
+  };
+  const pickImportFile = () => {
+    setImportError("");
+    fileInputRef.current?.click();
+  };
+  const handleImportFile = e => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(String(reader.result));
+        const itemsArr = Array.isArray(data.items) ? data.items : [];
+        const budgetObj = data.budget && typeof data.budget === "object" ? {
+          salary: Number(data.budget.salary) || 0,
+          fixed: Array.isArray(data.budget.fixed) ? data.budget.fixed : [],
+          income: Array.isArray(data.budget.income) ? data.budget.income : []
+        } : {
+          salary: 0,
+          fixed: [],
+          income: []
+        };
+        setImportError("");
+        setPendingImport({
+          items: itemsArr,
+          budget: budgetObj
+        });
+        setModal({
+          type: "import"
+        });
+      } catch (err) {
+        setImportError("ไฟล์นี้เปิดไม่ได้ ลองเลือกไฟล์สำรอง .json ที่ถูกต้องอีกครั้งนะคะ");
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  };
+  const confirmImport = () => {
+    if (!pendingImport) return;
+    setItems(pendingImport.items);
+    setBudget(pendingImport.budget);
+    setPendingImport(null);
+    setModal(null);
+  };
+
   const salary = Number(budget.salary) || 0;
+  const incomeList = budget.income || [];
+  const incomeTotal = incomeList.reduce((s, f) => s + (Number(f.amount) || 0), 0);
+  const incomeIrregularTotal = incomeList.filter(f => f.irregular).reduce((s, f) => s + (Number(f.amount) || 0), 0);
+  const incomeRegularTotal = incomeTotal - incomeIrregularTotal;
+  const totalIn = salary + incomeTotal;
+  const totalInSafe = salary + incomeRegularTotal; // ไม่นับรายรับที่ไม่แน่นอน (กันพลาด)
   const fixedTotal = (budget.fixed || []).reduce((s, f) => s + (Number(f.amount) || 0), 0);
   const active = items.filter(it => !isDone(it));
   const instTotal = active.reduce((s, it) => s + (Number(it.monthly) || 0), 0);
   const spent = fixedTotal + instTotal;
-  const free = salary - spent;
+  const free = totalIn - spent;
+  const freeSafe = totalInSafe - spent;
   return /*#__PURE__*/React.createElement("div", {
     style: S.page
   }, /*#__PURE__*/React.createElement(StyleTag, null), !ready ? /*#__PURE__*/React.createElement("div", {
@@ -681,7 +787,15 @@ function App() {
     value: budget.salary || "",
     onChange: e => setSalary(e.target.value),
     placeholder: "0"
-  }))), salary <= 0 ? /*#__PURE__*/React.createElement("div", {
+  }))), salary > 0 && incomeTotal > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13.5,
+      color: teal,
+      fontWeight: 700,
+      marginTop: 10,
+      marginBottom: 2
+    }
+  }, "+ รายรับเพิ่ม ", baht(incomeTotal), " · รวมรับทั้งเดือน ", baht(totalIn)), salary <= 0 ? /*#__PURE__*/React.createElement("div", {
     style: S.prompt
   }, "ใส่เงินเดือนเพื่อเริ่มคำนวณเงินเหลือใช้ · ", /*#__PURE__*/React.createElement("button", {
     style: S.linkBtn,
@@ -690,7 +804,7 @@ function App() {
       setItems(SAMPLE_ITEMS());
     }
   }, "ลองใส่ตัวอย่าง")) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(FlowBar, {
-    salary: salary,
+    salary: totalIn,
     fixed: fixedTotal,
     inst: instTotal
   }), /*#__PURE__*/React.createElement(Legend, {
@@ -706,15 +820,19 @@ function App() {
       ...S.freeNum,
       color: free >= 0 ? amber : red
     }
-  }, free < 0 ? "−" : "", baht(Math.abs(free)))), /*#__PURE__*/React.createElement("div", {
+  }, free < 0 ? "−" : "", baht(Math.abs(free)))), incomeIrregularTotal > 0 && (freeSafe < 0 ? /*#__PURE__*/React.createElement("div", {
+    style: S.warnNeg
+  }, "⚠️ ถ้าเดือนนี้ไม่มี ", incomeList.filter(f => f.irregular).map(f => f.name).join(", "), " (รายรับไม่แน่นอน) จะติดลบ ", baht(-freeSafe)) : /*#__PURE__*/React.createElement("div", {
+    style: S.warnSoft
+  }, "เผื่อไว้ก่อน: ถ้าไม่มีรายรับไม่แน่นอนเดือนนี้ จะเหลือใช้ ", baht(freeSafe), " (กันพลาด)")), /*#__PURE__*/React.createElement("div", {
     style: S.mascotRow
   }, /*#__PURE__*/React.createElement(Coin, {
-    mood: ploenSay(free, salary, instTotal).mood
+    mood: ploenSay(free, totalIn, instTotal).mood
   }), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: S.mascotName
   }, "น้องผ่อนเพลิน"), /*#__PURE__*/React.createElement("div", {
     style: S.bubble
-  }, ploenSay(free, salary, instTotal).msg))))), salary > 0 && /*#__PURE__*/React.createElement("section", {
+  }, ploenSay(free, totalIn, instTotal).msg))))), salary > 0 && /*#__PURE__*/React.createElement("section", {
     style: S.card
   }, /*#__PURE__*/React.createElement("div", {
     style: S.cardLabel
@@ -736,9 +854,9 @@ function App() {
   }))), /*#__PURE__*/React.createElement("input", {
     type: "range",
     min: 0,
-    max: Math.max(salary, 20000),
+    max: Math.max(totalIn, 20000),
     step: 500,
-    value: Math.min(extra, Math.max(salary, 20000)),
+    value: Math.min(extra, Math.max(totalIn, 20000)),
     onChange: e => setExtra(Number(e.target.value)),
     style: S.range,
     "aria-label": "ผ่อนเพิ่มเดือนละ"
@@ -755,7 +873,7 @@ function App() {
     },
     onClick: () => setExtra(0)
   }, "ล้าง")), /*#__PURE__*/React.createElement(FlowBar, {
-    salary: salary,
+    salary: totalIn,
     fixed: fixedTotal,
     inst: instTotal + extra,
     projected: true
@@ -776,7 +894,7 @@ function App() {
     }
   }, "↓ ", baht(extra), "/เดือน"))), extra > 0 && free - extra < 0 && /*#__PURE__*/React.createElement("div", {
     style: S.warnNeg
-  }, "ผ่อนเพิ่มเท่านี้จะทำให้เงินติดลบ ", baht(extra - free)), extra > 0 && free - extra >= 0 && free - extra < salary * 0.1 && /*#__PURE__*/React.createElement("div", {
+  }, "ผ่อนเพิ่มเท่านี้จะทำให้เงินติดลบ ", baht(extra - free)), extra > 0 && free - extra >= 0 && free - extra < totalIn * 0.1 && /*#__PURE__*/React.createElement("div", {
     style: S.warnSoft
   }, "ยังพอไหว แต่จะเหลือเผื่อฉุกเฉินน้อยมาก"), extra > 0 && /*#__PURE__*/React.createElement("button", {
     style: S.simAddBtn,
@@ -788,6 +906,12 @@ function App() {
     }
   }, "เพิ่มเป็นรายการผ่อนจริง →")), salary >= 0 && /*#__PURE__*/React.createElement(MonthlySummary, {
     items: items
+  }), /*#__PURE__*/React.createElement(IncomeList, {
+    income: budget.income || [],
+    total: incomeTotal,
+    onAdd: addIncome,
+    onUpdate: updateIncome,
+    onRemove: removeIncome
   }), /*#__PURE__*/React.createElement(FixedCosts, {
     fixed: budget.fixed || [],
     total: fixedTotal,
@@ -853,7 +977,19 @@ function App() {
       type: "delete",
       id
     })
-  }))), /*#__PURE__*/React.createElement("footer", {
+  })), /*#__PURE__*/React.createElement(BackupCard, {
+    onExport: exportData,
+    onPickFile: pickImportFile,
+    error: importError
+  }), /*#__PURE__*/React.createElement("input", {
+    ref: fileInputRef,
+    type: "file",
+    accept: "application/json,.json",
+    style: {
+      display: "none"
+    },
+    onChange: handleImportFile
+  })), /*#__PURE__*/React.createElement("footer", {
     style: S.footer
   }, "เก็บข้อมูลในเครื่องอัตโนมัติ")), unlocked && modal?.type === "add" && /*#__PURE__*/React.createElement(ItemForm, {
     title: "เพิ่มรายการผ่อน",
@@ -891,6 +1027,13 @@ function App() {
       deleteItem(modal.id);
       setModal(null);
     }
+  }), unlocked && modal?.type === "import" && /*#__PURE__*/React.createElement(ImportConfirm, {
+    data: pendingImport,
+    onClose: () => {
+      setPendingImport(null);
+      setModal(null);
+    },
+    onConfirm: confirmImport
   }));
 }
 const knownCards = items => [...new Set(items.map(i => (i.card || "").trim()).filter(Boolean))];
@@ -1232,6 +1375,9 @@ function MonthlySummary({
   const countThis = countPaidInYM(items, ym);
   const instNow = active.reduce((s, it) => s + (Number(it.monthly) || 0), 0);
   const finishing = active.filter(it => monthsLeftOf(it) === 1);
+  const totalRemaining = active.reduce((s, it) => s + remainingOf(it), 0);
+  const maxML = active.length ? Math.max(...active.map(monthsLeftOf)) : 0;
+  const freeMonth = active.length ? monthOfInstallment(ym, maxML) : null;
 
   // พยากรณ์ภาระผ่อน 6 เดือนข้างหน้า
   const forecast = Array.from({
@@ -1265,7 +1411,22 @@ function MonthlySummary({
     style: S.msNum
   }, baht(instNow)), /*#__PURE__*/React.createElement("div", {
     style: S.msLbl
-  }, "ภาระผ่อนเดือนนี้"))), finishing.length > 0 && /*#__PURE__*/React.createElement("div", {
+  }, "ภาระผ่อนเดือนนี้"))), active.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: S.calcBox
+  }, /*#__PURE__*/React.createElement("div", {
+    style: S.calcRow
+  }, /*#__PURE__*/React.createElement("span", null, "หนี้คงเหลือทั้งหมด"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontWeight: 800
+    }
+  }, baht(totalRemaining))), freeMonth && /*#__PURE__*/React.createElement("div", {
+    style: S.calcRow
+  }, /*#__PURE__*/React.createElement("span", null, "คาดว่าจะปลอดหนี้"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: teal,
+      fontWeight: 800
+    }
+  }, freeMonth.label, " ", freeMonth.beShort))), finishing.length > 0 && /*#__PURE__*/React.createElement("div", {
     style: S.msFinish
   }, "🎉 จ่ายงวดสุดท้ายเดือนนี้: ", finishing.map(it => `${it.emoji} ${it.name}`).join(", ")), /*#__PURE__*/React.createElement("div", {
     style: S.msForeLabel
@@ -1378,6 +1539,150 @@ function FixedCosts({
     onClick: submit,
     "aria-label": "เพิ่ม"
   }, "+"))));
+}
+
+/* ============================ income (รายรับเพิ่มเติม) ============================ */
+function IncomeList({
+  income,
+  total,
+  onAdd,
+  onUpdate,
+  onRemove
+}) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [amount, setAmount] = useState("");
+  const [irregular, setIrregular] = useState(false);
+  const submit = () => {
+    if (name.trim() && Number(amount) > 0) {
+      onAdd(name.trim(), amount, irregular);
+      setName("");
+      setAmount("");
+      setIrregular(false);
+    }
+  };
+  const quick = [{
+    label: "ค่า พ.ต.ส.",
+    irregular: false
+  }, {
+    label: "ค่า OT",
+    irregular: true
+  }, {
+    label: "ขายเวร",
+    irregular: true
+  }, {
+    label: "เงินพิเศษ",
+    irregular: true
+  }];
+  const irregularTotal = (income || []).filter(f => f.irregular).reduce((s, f) => s + (Number(f.amount) || 0), 0);
+  const regularTotal = total - irregularTotal;
+  const toggleBtn = (on, onClick) => /*#__PURE__*/React.createElement("button", {
+    onClick,
+    style: {
+      ...S.miniChip,
+      marginTop: 6,
+      border: `2px solid ${on ? amber : line}`,
+      color: on ? amber : muted,
+      background: on ? amber + "14" : "#fff"
+    }
+  }, on ? "☑ ไม่แน่นอน" : "☐ ไม่แน่นอน");
+  return /*#__PURE__*/React.createElement("section", {
+    style: S.card
+  }, /*#__PURE__*/React.createElement("button", {
+    style: S.collapseHead,
+    onClick: () => setOpen(o => !o)
+  }, /*#__PURE__*/React.createElement("span", {
+    style: S.cardLabel
+  }, "รายรับเพิ่มเติม"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      ...S.collapseRight,
+      color: teal
+    }
+  }, "+", baht(total), "/เดือน ", /*#__PURE__*/React.createElement("span", {
+    style: S.caret
+  }, open ? "▴" : "▾"))), open && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: S.muted2
+  }, "รายได้นอกเหนือเงินเดือน เช่น ค่า พ.ต.ส. ค่า OT เงินจากการขายเวร — จะถูกบวกเข้ากับเงินที่เหลือใช้ ติ๊ก “ไม่แน่นอน” สำหรับรายรับที่ไม่ได้ทุกเดือน แอปจะกันไว้ไม่นับรวมในยอด "), irregularTotal > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...S.muted2,
+      marginTop: 2,
+      marginBottom: 4
+    }
+  }, "ประจำ ", baht(regularTotal), " · ไม่แน่นอน ", baht(irregularTotal), " (กันพลาด)"), (income || []).map(f => /*#__PURE__*/React.createElement("div", {
+    key: f.id,
+    style: {
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...S.fixedRow,
+      marginBottom: 0
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    style: S.fixedName,
+    value: f.name,
+    onChange: e => onUpdate(f.id, {
+      name: e.target.value
+    })
+  }), /*#__PURE__*/React.createElement("div", {
+    style: S.fixedAmtWrap
+  }, /*#__PURE__*/React.createElement("span", {
+    style: S.bahtSignSm
+  }, "฿"), /*#__PURE__*/React.createElement("input", {
+    style: S.fixedAmt,
+    type: "number",
+    inputMode: "numeric",
+    value: f.amount || "",
+    onChange: e => onUpdate(f.id, {
+      amount: Number(e.target.value) || 0
+    })
+  })), /*#__PURE__*/React.createElement("button", {
+    style: S.rowDel,
+    onClick: () => onRemove(f.id),
+    "aria-label": "ลบ"
+  }, "✕")), toggleBtn(!!f.irregular, () => onUpdate(f.id, {
+    irregular: !f.irregular
+  })))), /*#__PURE__*/React.createElement("div", {
+    style: S.fixedAddRow
+  }, /*#__PURE__*/React.createElement("input", {
+    style: S.fixedName,
+    value: name,
+    onChange: e => setName(e.target.value),
+    placeholder: "ชื่อรายรับ"
+  }), /*#__PURE__*/React.createElement("div", {
+    style: S.fixedAmtWrap
+  }, /*#__PURE__*/React.createElement("span", {
+    style: S.bahtSignSm
+  }, "฿"), /*#__PURE__*/React.createElement("input", {
+    style: S.fixedAmt,
+    type: "number",
+    inputMode: "numeric",
+    value: amount,
+    onChange: e => setAmount(e.target.value),
+    placeholder: "0"
+  })), /*#__PURE__*/React.createElement("button", {
+    style: S.rowAdd,
+    onClick: submit,
+    "aria-label": "เพิ่ม"
+  }, "+")), toggleBtn(irregular, () => setIrregular(v => !v)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 8,
+      marginTop: 10
+    }
+  }, quick.map(q => /*#__PURE__*/React.createElement("button", {
+    key: q.label,
+    style: S.miniChip,
+    onClick: () => {
+      setName(q.label);
+      setIrregular(q.irregular);
+    }
+  }, "+ ", q.label)))));
 }
 
 /* ============================ installments ============================ */
@@ -1580,12 +1885,31 @@ function ItemForm({
   const [monthly, setMonthly] = useState(initial?.monthly ?? (presetMonthly || ""));
   const [months, setMonths] = useState(initial?.months ?? "");
   const [startMonth, setStartMonth] = useState(initial?.startMonth || todayStr().slice(0, 7));
+  const [useInterest, setUseInterest] = useState(initial?.rate != null && initial?.principal != null);
+  const [principal, setPrincipal] = useState(initial?.principal ?? "");
+  const [rate, setRate] = useState(initial?.rate ?? "");
+  // ดอกเบี้ยแบบคงที่ (flat rate) ต่อปี: ดอก = เงินต้น × อัตรา/ปี × จำนวนปี
+  const calc = (() => {
+    const p = Number(principal),
+      r = Number(rate),
+      n = Number(months);
+    if (!useInterest || !(p > 0) || !(n > 0)) return null;
+    const interest = p * (r / 100) * (n / 12);
+    const tot = Math.round(p + interest);
+    return {
+      interest: Math.round(interest),
+      total: tot,
+      monthly: Math.round(tot / n)
+    };
+  })();
+  const effTotal = calc ? calc.total : Number(total) || 0;
+  const effMonthly = calc ? calc.monthly : Number(monthly) || 0;
   const autoMonths = (() => {
     const t = Number(total),
       m = Number(monthly);
     return t > 0 && m > 0 ? Math.ceil(t / m) : "";
   })();
-  const canSave = name.trim() && Number(total) > 0 && Number(monthly) > 0;
+  const canSave = name.trim() && (useInterest ? Number(principal) > 0 && Number(months) > 0 : Number(total) > 0 && Number(monthly) > 0);
   return /*#__PURE__*/React.createElement(Sheet, {
     title: title,
     onClose: onClose
@@ -1646,6 +1970,89 @@ function ItemForm({
     style: S.miniChip
   }, "🪪 ", c)))), /*#__PURE__*/React.createElement("div", {
     style: {
+      margin: "2px 0 2px"
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setUseInterest(v => !v),
+    style: {
+      ...S.platChip,
+      borderColor: useInterest ? teal : line,
+      color: useInterest ? teal : muted,
+      background: useInterest ? teal + "14" : "#fff"
+    }
+  }, useInterest ? "☑" : "☐", " ให้แอปคิดดอกเบี้ยให้ (% ต่อปี)")), useInterest ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 12
+    }
+  }, /*#__PURE__*/React.createElement(Field, {
+    label: "ราคา/เงินต้น"
+  }, /*#__PURE__*/React.createElement("input", {
+    style: S.input,
+    type: "number",
+    inputMode: "decimal",
+    value: principal,
+    onChange: e => setPrincipal(e.target.value),
+    placeholder: "36000"
+  })), /*#__PURE__*/React.createElement(Field, {
+    label: "ดอกเบี้ย %/ปี"
+  }, /*#__PURE__*/React.createElement("input", {
+    style: S.input,
+    type: "number",
+    inputMode: "decimal",
+    value: rate,
+    onChange: e => setRate(e.target.value),
+    placeholder: "15"
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 12
+    }
+  }, /*#__PURE__*/React.createElement(Field, {
+    label: "จำนวนงวด (เดือน)"
+  }, /*#__PURE__*/React.createElement("input", {
+    style: S.input,
+    type: "number",
+    inputMode: "numeric",
+    value: months,
+    onChange: e => setMonths(e.target.value),
+    placeholder: "12"
+  })), /*#__PURE__*/React.createElement(Field, {
+    label: "เริ่มผ่อนเดือน"
+  }, /*#__PURE__*/React.createElement("input", {
+    style: S.input,
+    type: "month",
+    value: startMonth,
+    onChange: e => setStartMonth(e.target.value)
+  }))), calc ? /*#__PURE__*/React.createElement("div", {
+    style: S.calcBox
+  }, /*#__PURE__*/React.createElement("div", {
+    style: S.calcRow
+  }, /*#__PURE__*/React.createElement("span", null, "ดอกเบี้ยรวม"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: red,
+      fontWeight: 700
+    }
+  }, "+", baht(calc.interest))), /*#__PURE__*/React.createElement("div", {
+    style: S.calcRow
+  }, /*#__PURE__*/React.createElement("span", null, "ยอดผ่อนรวม"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontWeight: 700
+    }
+  }, baht(calc.total))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...S.calcRow,
+      fontSize: 16
+    }
+  }, /*#__PURE__*/React.createElement("span", null, "ตกเดือนละ"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: teal,
+      fontWeight: 800
+    }
+  }, baht(calc.monthly), " × ", Number(months) || 0, " งวด"))) : /*#__PURE__*/React.createElement("div", {
+    style: S.hint
+  }, "ใส่ราคา ดอกเบี้ย และจำนวนงวด แล้วแอปจะคำนวณยอดผ่อนรวมให้")) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: {
       display: "flex",
       gap: 12
     }
@@ -1688,7 +2095,7 @@ function ItemForm({
     type: "month",
     value: startMonth,
     onChange: e => setStartMonth(e.target.value)
-  }))), /*#__PURE__*/React.createElement("button", {
+  })))), /*#__PURE__*/React.createElement("button", {
     style: {
       ...S.saveBtn,
       opacity: canSave ? 1 : 0.5
@@ -1699,10 +2106,12 @@ function ItemForm({
       emoji,
       platform,
       card: card.trim(),
-      total: Number(total) || 0,
-      monthly: Number(monthly) || 0,
+      total: effTotal,
+      monthly: effMonthly,
       months: Number(months) || autoMonths || undefined,
-      startMonth
+      startMonth,
+      principal: useInterest ? Number(principal) || 0 : undefined,
+      rate: useInterest ? Number(rate) || 0 : undefined
     })
   }, "บันทึก"));
 }
@@ -1835,6 +2244,74 @@ function Confirm({
     },
     onClick: onConfirm
   }, "ลบเลย")));
+}
+function ImportConfirm({
+  data,
+  onConfirm,
+  onClose
+}) {
+  const n = data?.items?.length || 0;
+  const sal = data?.budget?.salary || 0;
+  const fx = (data?.budget?.fixed || []).length;
+  const inc = (data?.budget?.income || []).length;
+  return /*#__PURE__*/React.createElement(Sheet, {
+    title: "นำเข้าข้อมูลนี้?",
+    onClose: onClose
+  }, /*#__PURE__*/React.createElement("div", {
+    style: S.hint
+  }, "ไฟล์นี้มี: รายการผ่อน ", n, " รายการ · เงินเดือน ", baht(sal), " · ค่าใช้จ่ายประจำ ", fx, " รายการ · รายรับเพิ่มเติม ", inc, " รายการ", /*#__PURE__*/React.createElement("br", null), "การนำเข้าจะแทนที่ข้อมูลปัจจุบันทั้งหมดในเครื่องนี้ และเอาคืนไม่ได้"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 12,
+      marginTop: 6
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    style: {
+      ...S.ghostBig
+    },
+    onClick: onClose
+  }, "ยกเลิก"), /*#__PURE__*/React.createElement("button", {
+    style: {
+      ...S.saveBtn,
+      marginTop: 0,
+      background: teal
+    },
+    onClick: onConfirm
+  }, "ยืนยันนำเข้า")));
+}
+function BackupCard({
+  onExport,
+  onPickFile,
+  error
+}) {
+  return /*#__PURE__*/React.createElement("section", {
+    style: S.card
+  }, /*#__PURE__*/React.createElement("div", {
+    style: S.cardLabel
+  }, "สำรอง/กู้ข้อมูล"), /*#__PURE__*/React.createElement("div", {
+    style: S.muted2
+  }, "ดาวน์โหลดข้อมูลเก็บไว้กันลืม เผื่อล้างข้อมูลเบราว์เซอร์หรือเปลี่ยนเครื่อง แล้วนำเข้ากลับได้ทุกเมื่อ"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10,
+      marginTop: 10,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    style: {
+      ...S.ghostBig,
+      flex: "1 1 140px"
+    },
+    onClick: onExport
+  }, "⬇️ ดาวน์โหลดสำรอง"), /*#__PURE__*/React.createElement("button", {
+    style: {
+      ...S.ghostBig,
+      flex: "1 1 140px"
+    },
+    onClick: onPickFile
+  }, "⬆️ นำเข้าไฟล์")), error && /*#__PURE__*/React.createElement("div", {
+    style: S.warnNeg
+  }, error));
 }
 function Sheet({
   title,
@@ -2808,6 +3285,23 @@ const S = {
   histMeta: {
     fontSize: 12,
     color: muted
+  },
+  calcBox: {
+    background: "#FFF7EF",
+    border: `1.5px solid ${line}`,
+    borderRadius: 14,
+    padding: "12px 14px",
+    margin: "4px 0 6px",
+    display: "flex",
+    flexDirection: "column",
+    gap: 7
+  },
+  calcRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "baseline",
+    fontSize: 14,
+    color: ink
   }
 };
 ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
