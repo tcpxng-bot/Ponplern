@@ -502,7 +502,8 @@ function App() {
   const [budget, setBudget] = useState({
     salary: 0,
     fixed: [],
-    income: []
+    income: [],
+    savingsGoals: []
   });
   const [ready, setReady] = useState(false);
   const [modal, setModal] = useState(null);
@@ -524,7 +525,18 @@ function App() {
       } catch (e) {}
       try {
         const b = await window.storage.get(BUDGET_KEY);
-        if (b?.value) setBudget(JSON.parse(b.value));
+        if (b?.value) {
+          const parsed = JSON.parse(b.value);
+          // ย้ายข้อมูลเก่า: เป้าหมายออมเดี่ยว (savingsGoal) -> รายการเป้าหมายหลายอัน (savingsGoals)
+          if (!Array.isArray(parsed.savingsGoals)) {
+            parsed.savingsGoals = parsed.savingsGoal ? [{
+              id: uid(),
+              ...parsed.savingsGoal
+            }] : [];
+          }
+          delete parsed.savingsGoal;
+          setBudget(parsed);
+        }
       } catch (e) {}
       let savedPin = "";
       try {
@@ -587,12 +599,27 @@ function App() {
     ...it,
     payments: it.payments.filter(x => x.id !== pid)
   } : it));
+  const updatePayment = (id, pid, patch) => setItems(p => p.map(it => it.id === id ? {
+    ...it,
+    payments: (it.payments || []).map(x => x.id === pid ? {
+      ...x,
+      ...patch
+    } : x)
+  } : it));
+  // วันที่ของงวดที่ idx (0-based): ถ้าเป็นเดือนปัจจุบันใช้วันนี้จริง ถ้าเป็นเดือนอื่น (บันทึกย้อนหลัง) ใช้วันที่ 1 ของเดือนนั้น
+  const dateForIndex = (it, idx) => {
+    const realYM = todayStr().slice(0, 7);
+    const t = monthOfInstallment(it.startMonth, idx);
+    const targetYM = `${t.year}-${String(t.mo + 1).padStart(2, "0")}`;
+    return targetYM === realYM ? todayStr() : `${targetYM}-01`;
+  };
   const payMonth = it => {
+    const idx = paidMonthsOf(it);
     const amt = Math.min(Number(it.monthly) || 0, remainingOf(it));
     if (amt > 0) addPayment(it.id, {
-      date: todayStr(),
+      date: dateForIndex(it, idx),
       amount: amt,
-      note: `งวดที่ ${paidMonthsOf(it) + 1}`,
+      note: `งวดที่ ${idx + 1}`,
       kind: "normal"
     });
   };
@@ -601,7 +628,7 @@ function App() {
     if (idx === paid) {
       const amt = Math.min(Number(it.monthly) || 0, remainingOf(it));
       if (amt > 0) addPayment(it.id, {
-        date: todayStr(),
+        date: dateForIndex(it, idx),
         amount: amt,
         note: `งวดที่ ${paid + 1}`,
         kind: "normal"
@@ -657,28 +684,72 @@ function App() {
     income: (b.income || []).filter(f => f.id !== id)
   }));
 
+  /* เป้าหมายออม (หลายอันได้) */
+  const addSavingsGoal = (name, target) => setBudget(b => ({
+    ...b,
+    savingsGoals: [...(b.savingsGoals || []), {
+      id: uid(),
+      name,
+      target: Number(target) || 0,
+      saved: 0
+    }]
+  }));
+  const addSaved = (id, amount) => setBudget(b => ({
+    ...b,
+    savingsGoals: (b.savingsGoals || []).map(g => g.id === id ? {
+      ...g,
+      saved: Math.max(0, (Number(g.saved) || 0) + (Number(amount) || 0))
+    } : g)
+  }));
+  const removeSavingsGoal = id => setBudget(b => ({
+    ...b,
+    savingsGoals: (b.savingsGoals || []).filter(g => g.id !== id)
+  }));
+
   /* สำรอง/กู้ข้อมูล */
-  const exportData = () => {
+  const downloadBlob = (filename, blob) => {
     try {
-      const payload = {
-        app: "pon-ploen-backup",
-        version: 1,
-        exportedAt: new Date().toISOString(),
-        items,
-        budget
-      };
-      const blob = new Blob([JSON.stringify(payload, null, 2)], {
-        type: "application/json"
-      });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `pon-ploen-backup-${todayStr()}.json`;
+      a.download = filename;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (e) {}
+  };
+  const exportData = () => {
+    const payload = {
+      app: "pon-ploen-backup",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      items,
+      budget
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: "application/json"
+    });
+    downloadBlob(`pon-ploen-backup-${todayStr()}.json`, blob);
+  };
+  const csvCell = v => {
+    const s = String(v ?? "");
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const exportCSV = () => {
+    const header = ["วันที่", "รายการ", "ร้าน/แพลตฟอร์ม", "บัตร/ช่องทาง", "จำนวนเงิน", "ประเภท", "หมายเหตุ"];
+    const rows = [];
+    items.forEach(it => {
+      (it.payments || []).forEach(p => {
+        rows.push([p.date || "", it.name || "", platMeta(it.platform).label, it.card || "", Number(p.amount) || 0, p.kind === "prepay" ? "จ่ายล่วงหน้า" : "งวดปกติ", p.note || ""]);
+      });
+    });
+    rows.sort((a, b) => (a[0] || "") < (b[0] || "") ? -1 : (a[0] || "") > (b[0] || "") ? 1 : 0);
+    const csv = "\uFEFF" + [header, ...rows].map(r => r.map(csvCell).join(",")).join("\r\n");
+    const blob = new Blob([csv], {
+      type: "text/csv;charset=utf-8;"
+    });
+    downloadBlob(`pon-ploen-payments-${todayStr()}.csv`, blob);
   };
   const pickImportFile = () => {
     setImportError("");
@@ -692,14 +763,16 @@ function App() {
       try {
         const data = JSON.parse(String(reader.result));
         const itemsArr = Array.isArray(data.items) ? data.items : [];
-        const budgetObj = data.budget && typeof data.budget === "object" ? {
-          salary: Number(data.budget.salary) || 0,
-          fixed: Array.isArray(data.budget.fixed) ? data.budget.fixed : [],
-          income: Array.isArray(data.budget.income) ? data.budget.income : []
-        } : {
-          salary: 0,
-          fixed: [],
-          income: []
+        const db = data.budget || {};
+        const savingsGoals = Array.isArray(db.savingsGoals) ? db.savingsGoals : db.savingsGoal && typeof db.savingsGoal === "object" ? [{
+          id: uid(),
+          ...db.savingsGoal
+        }] : [];
+        const budgetObj = {
+          salary: Number(db.salary) || 0,
+          fixed: Array.isArray(db.fixed) ? db.fixed : [],
+          income: Array.isArray(db.income) ? db.income : [],
+          savingsGoals
         };
         setImportError("");
         setPendingImport({
@@ -737,6 +810,13 @@ function App() {
   const spent = fixedTotal + instTotal;
   const free = totalIn - spent;
   const freeSafe = totalInSafe - spent;
+  // รายการที่ยังไม่จ่ายงวดของตัวเองสำหรับเดือนนี้ (ถึงกำหนดแล้วหรือเลยกำหนดแล้ว)
+  const realYM = todayStr().slice(0, 7);
+  const dueItems = active.filter(it => {
+    const t = monthOfInstallment(it.startMonth, paidMonthsOf(it));
+    const targetYM = `${t.year}-${String(t.mo + 1).padStart(2, "0")}`;
+    return targetYM <= realYM;
+  });
   return /*#__PURE__*/React.createElement("div", {
     style: S.page
   }, /*#__PURE__*/React.createElement(StyleTag, null), !ready ? /*#__PURE__*/React.createElement("div", {
@@ -768,7 +848,17 @@ function App() {
     onClick: () => setModal({
       type: "add"
     })
-  }, "+ เพิ่มรายการผ่อน")), /*#__PURE__*/React.createElement("section", {
+  }, "+ เพิ่มรายการผ่อน")), dueItems.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: S.dueBanner
+  }, /*#__PURE__*/React.createElement("div", {
+    style: S.dueBannerHead
+  }, "⏰ ยังไม่จ่าย ", dueItems.length, " รายการเดือนนี้ — แตะเพื่อจ่ายเลย"), /*#__PURE__*/React.createElement("div", {
+    style: S.dueChipsRow
+  }, dueItems.map(it => /*#__PURE__*/React.createElement("button", {
+    key: it.id,
+    style: S.dueChip,
+    onClick: () => payMonth(it)
+  }, it.emoji, " ", it.name, " · ", baht(it.monthly), " ✓")))), /*#__PURE__*/React.createElement("section", {
     style: S.card
   }, /*#__PURE__*/React.createElement("div", {
     style: S.cardLabel
@@ -832,7 +922,19 @@ function App() {
     style: S.mascotName
   }, "น้องผ่อนเพลิน"), /*#__PURE__*/React.createElement("div", {
     style: S.bubble
-  }, ploenSay(free, totalIn, instTotal).msg))))), salary > 0 && /*#__PURE__*/React.createElement("section", {
+  }, ploenSay(free, totalIn, instTotal).msg))))), /*#__PURE__*/React.createElement(IncomeList, {
+    income: budget.income || [],
+    total: incomeTotal,
+    onAdd: addIncome,
+    onUpdate: updateIncome,
+    onRemove: removeIncome
+  }), /*#__PURE__*/React.createElement(FixedCosts, {
+    fixed: budget.fixed || [],
+    total: fixedTotal,
+    onAdd: addFixed,
+    onUpdate: updateFixed,
+    onRemove: removeFixed
+  }), salary > 0 && /*#__PURE__*/React.createElement("section", {
     style: S.card
   }, /*#__PURE__*/React.createElement("div", {
     style: S.cardLabel
@@ -906,18 +1008,12 @@ function App() {
     }
   }, "เพิ่มเป็นรายการผ่อนจริง →")), salary >= 0 && /*#__PURE__*/React.createElement(MonthlySummary, {
     items: items
-  }), /*#__PURE__*/React.createElement(IncomeList, {
-    income: budget.income || [],
-    total: incomeTotal,
-    onAdd: addIncome,
-    onUpdate: updateIncome,
-    onRemove: removeIncome
-  }), /*#__PURE__*/React.createElement(FixedCosts, {
-    fixed: budget.fixed || [],
-    total: fixedTotal,
-    onAdd: addFixed,
-    onUpdate: updateFixed,
-    onRemove: removeFixed
+  }), /*#__PURE__*/React.createElement(SavingsGoals, {
+    goals: budget.savingsGoals || [],
+    free: free,
+    onAdd: addSavingsGoal,
+    onAddSaved: addSaved,
+    onRemove: removeSavingsGoal
   }), /*#__PURE__*/React.createElement("section", {
     style: {
       marginTop: 8
@@ -979,6 +1075,7 @@ function App() {
     })
   })), /*#__PURE__*/React.createElement(BackupCard, {
     onExport: exportData,
+    onExportCSV: exportCSV,
     onPickFile: pickImportFile,
     error: importError
   }), /*#__PURE__*/React.createElement("input", {
@@ -1019,7 +1116,10 @@ function App() {
   }), unlocked && modal?.type === "history" && /*#__PURE__*/React.createElement(History, {
     item: items.find(i => i.id === modal.id),
     onClose: () => setModal(null),
-    onDel: pid => deletePayment(modal.id, pid)
+    onDel: pid => deletePayment(modal.id, pid),
+    onEditDate: (pid, date) => updatePayment(modal.id, pid, {
+      date
+    })
   }), unlocked && modal?.type === "delete" && /*#__PURE__*/React.createElement(Confirm, {
     name: items.find(i => i.id === modal.id)?.name,
     onClose: () => setModal(null),
@@ -1368,16 +1468,27 @@ function LegendDot({
 function MonthlySummary({
   items
 }) {
+  const [open, setOpen] = useState(true);
   const now = new Date();
   const ym = now.toISOString().slice(0, 7);
   const active = items.filter(it => !isDone(it));
   const paidThis = paidInYM(items, ym);
-  const countThis = countPaidInYM(items, ym);
   const instNow = active.reduce((s, it) => s + (Number(it.monthly) || 0), 0);
   const finishing = active.filter(it => monthsLeftOf(it) === 1);
   const totalRemaining = active.reduce((s, it) => s + remainingOf(it), 0);
   const maxML = active.length ? Math.max(...active.map(monthsLeftOf)) : 0;
   const freeMonth = active.length ? monthOfInstallment(ym, maxML) : null;
+
+  // เทียบภาระผ่อนเดือนนี้กับเดือนก่อน (ดูจากยอดคงเหลือ ณ สิ้นเดือนก่อน ไม่ใช่ตารางคงที่)
+  const lastD = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const lastYM = `${lastD.getFullYear()}-${String(lastD.getMonth() + 1).padStart(2, "0")}`;
+  const wasActiveInMonth = (it, targetYM) => {
+    if (!it.startMonth || it.startMonth > targetYM) return false;
+    const paidByThen = (it.payments || []).filter(p => (p.date || "").slice(0, 7) <= targetYM).reduce((s, p) => s + (Number(p.amount) || 0), 0);
+    return (Number(it.total) || 0) - paidByThen > 0.0001;
+  };
+  const lastMonthInst = items.filter(it => wasActiveInMonth(it, lastYM)).reduce((s, it) => s + (Number(it.monthly) || 0), 0);
+  const instDelta = instNow - lastMonthInst;
 
   // พยากรณ์ภาระผ่อน 6 เดือนข้างหน้า
   const forecast = Array.from({
@@ -1393,25 +1504,58 @@ function MonthlySummary({
     };
   });
   const maxV = Math.max(1, ...forecast.map(f => f.value));
+
+  // จ่ายจริงย้อนหลัง 6 เดือนที่ผ่านมา (รวมเดือนนี้)
+  const pastForecast = Array.from({
+    length: 6
+  }).map((_, k) => {
+    const offset = k - 5; // -5..0
+    const d = new Date(now.getFullYear(), now.getMonth() + offset, 1);
+    const pym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    return {
+      label: THMONTH[d.getMonth()],
+      value: paidInYM(items, pym),
+      isNow: offset === 0
+    };
+  });
+  const maxVPast = Math.max(1, ...pastForecast.map(f => f.value));
   return /*#__PURE__*/React.createElement("section", {
     style: S.card
-  }, /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("button", {
+    style: S.collapseHead,
+    onClick: () => setOpen(o => !o)
+  }, /*#__PURE__*/React.createElement("span", {
     style: S.cardLabel
-  }, "สรุปประจำเดือน · ", thMonth()), /*#__PURE__*/React.createElement("div", {
-    style: S.msRow
+  }, "สรุปประจำเดือน · ", thMonth()), /*#__PURE__*/React.createElement("span", {
+    style: S.collapseRight
+  }, active.length > 0 ? `หนี้คงเหลือ ${baht(totalRemaining)}` : baht(paidThis), " ", /*#__PURE__*/React.createElement("span", {
+    style: S.caret
+  }, open ? "▴" : "▾"))), open && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...S.msRow,
+      marginTop: 14
+    }
   }, /*#__PURE__*/React.createElement("div", {
     style: S.msStat
   }, /*#__PURE__*/React.createElement("div", {
     style: S.msNum
   }, baht(paidThis)), /*#__PURE__*/React.createElement("div", {
     style: S.msLbl
-  }, "จ่ายแล้วเดือนนี้ (", countThis, " ครั้ง)")), /*#__PURE__*/React.createElement("div", {
+  }, "จ่ายแล้วเดือนนี้")), /*#__PURE__*/React.createElement("div", {
     style: S.msStat
   }, /*#__PURE__*/React.createElement("div", {
     style: S.msNum
   }, baht(instNow)), /*#__PURE__*/React.createElement("div", {
     style: S.msLbl
-  }, "ภาระผ่อนเดือนนี้"))), active.length > 0 && /*#__PURE__*/React.createElement("div", {
+  }, "ภาระผ่อนเดือนนี้"))), lastMonthInst > 0 && instDelta !== 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...S.muted2,
+      marginTop: -8,
+      marginBottom: 10,
+      fontWeight: 700,
+      color: instDelta < 0 ? teal : amber
+    }
+  }, instDelta < 0 ? `▼ ภาระผ่อนลดลง ${baht(-instDelta)} จากเดือนก่อน` : `▲ ภาระผ่อนเพิ่มขึ้น ${baht(instDelta)} จากเดือนก่อน`), active.length > 0 && /*#__PURE__*/React.createElement("div", {
     style: S.calcBox
   }, /*#__PURE__*/React.createElement("div", {
     style: S.calcRow
@@ -1453,7 +1597,33 @@ function MonthlySummary({
     style: S.foreMo
   }, f.label)))), forecast[5].value < instNow && /*#__PURE__*/React.createElement("div", {
     style: S.msHint
-  }, "ดีจัง~ อีกไม่กี่เดือนภาระผ่อนจะเบาลงน้า"));
+  }, "ดีจัง~ อีกไม่กี่เดือนภาระผ่อนจะเบาลงน้า"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...S.msForeLabel,
+      marginTop: 18
+    }
+  }, "จ่ายจริงย้อนหลัง · 6 เดือนที่ผ่านมา"), /*#__PURE__*/React.createElement("div", {
+    style: S.foreGrid
+  }, pastForecast.map((f, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: S.foreCol
+  }, /*#__PURE__*/React.createElement("div", {
+    style: S.foreBarWrap
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...S.foreBar,
+      height: `${f.value / maxVPast * 100}%`,
+      background: f.isNow ? "#FF9EB0" : slate,
+      opacity: f.value === 0 ? 0.25 : 1
+    }
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...S.foreVal,
+      color: f.isNow ? "#E08AA0" : muted
+    }
+  }, f.value >= 1000 ? Math.round(f.value / 1000) + "k" : f.value), /*#__PURE__*/React.createElement("div", {
+    style: S.foreMo
+  }, f.label))))));
 }
 
 /* ============================ fixed costs ============================ */
@@ -1683,6 +1853,191 @@ function IncomeList({
       setIrregular(q.irregular);
     }
   }, "+ ", q.label)))));
+}
+
+/* ============================ เป้าหมายออม ============================ */
+function SavingsGoals({
+  goals,
+  free,
+  onAdd,
+  onAddSaved,
+  onRemove
+}) {
+  const [open, setOpen] = useState(true);
+  const [name, setName] = useState("");
+  const [target, setTarget] = useState("");
+  const quick = ["กองทุนฉุกเฉิน", "ดาวน์รถ", "ดาวน์บ้าน", "ท่องเที่ยว"];
+  const submitGoal = () => {
+    if (name.trim() && Number(target) > 0) {
+      onAdd(name.trim(), target);
+      setName("");
+      setTarget("");
+    }
+  };
+  const list = goals || [];
+  return /*#__PURE__*/React.createElement("section", {
+    style: S.card
+  }, /*#__PURE__*/React.createElement("button", {
+    style: S.collapseHead,
+    onClick: () => setOpen(o => !o)
+  }, /*#__PURE__*/React.createElement("span", {
+    style: S.cardLabel
+  }, "🎯 เป้าหมายออม"), /*#__PURE__*/React.createElement("span", {
+    style: S.collapseRight
+  }, list.length > 0 ? `${list.length} เป้า` : "", " ", /*#__PURE__*/React.createElement("span", {
+    style: S.caret
+  }, open ? "▴" : "▾"))), open && /*#__PURE__*/React.createElement(React.Fragment, null, list.length === 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...S.muted2,
+      marginTop: 6,
+      marginBottom: 10
+    }
+  }, "ตั้งเป้าว่าอยากเก็บเงินไว้ทำอะไร แล้วติดตามความก้าวหน้าได้ที่นี่ ตั้งได้หลายเป้าพร้อมกัน"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 12,
+      display: "flex",
+      flexDirection: "column",
+      gap: 12
+    }
+  }, list.map(g => /*#__PURE__*/React.createElement(SavingsGoalRow, {
+    key: g.id,
+    goal: g,
+    free: free,
+    onAddSaved: amt => onAddSaved(g.id, amt),
+    onRemove: () => onRemove(g.id)
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: list.length ? 14 : 0,
+      paddingTop: list.length ? 14 : 0,
+      borderTop: list.length ? `1px dashed ${line}` : "none"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement(Field, {
+    label: "ชื่อเป้าหมายใหม่"
+  }, /*#__PURE__*/React.createElement("input", {
+    style: S.input,
+    value: name,
+    onChange: e => setName(e.target.value),
+    placeholder: "เช่น ดาวน์รถ"
+  })), /*#__PURE__*/React.createElement(Field, {
+    label: "เป้าหมาย (บาท)"
+  }, /*#__PURE__*/React.createElement("input", {
+    style: S.input,
+    type: "number",
+    inputMode: "numeric",
+    value: target,
+    onChange: e => setTarget(e.target.value),
+    placeholder: "50000"
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 8,
+      marginBottom: 12
+    }
+  }, quick.map(q => /*#__PURE__*/React.createElement("button", {
+    key: q,
+    style: S.miniChip,
+    onClick: () => setName(q)
+  }, "+ ", q))), /*#__PURE__*/React.createElement("button", {
+    style: {
+      ...S.saveBtn,
+      marginTop: 0,
+      opacity: name.trim() && Number(target) > 0 ? 1 : 0.5
+    },
+    disabled: !(name.trim() && Number(target) > 0),
+    onClick: submitGoal
+  }, "+ เพิ่มเป้าหมาย"))));
+}
+function SavingsGoalRow({
+  goal,
+  free,
+  onAddSaved,
+  onRemove
+}) {
+  const [addAmt, setAddAmt] = useState("");
+  const submitAdd = () => {
+    if (Number(addAmt) > 0) {
+      onAddSaved(addAmt);
+      setAddAmt("");
+    }
+  };
+  const pct = goal.target > 0 ? Math.min(100, Math.round(goal.saved / goal.target * 100)) : 0;
+  const remaining = Math.max(0, goal.target - goal.saved);
+  const monthsToGo = free > 0 && remaining > 0 ? Math.ceil(remaining / free) : null;
+  const reached = goal.saved >= goal.target && goal.target > 0;
+  return /*#__PURE__*/React.createElement("div", {
+    style: S.calcBox
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontWeight: 700,
+      color: ink
+    }
+  }, goal.name), /*#__PURE__*/React.createElement("button", {
+    style: S.rowDel,
+    onClick: onRemove,
+    "aria-label": "ลบเป้าหมาย"
+  }, "✕")), /*#__PURE__*/React.createElement("div", {
+    style: S.goalBarOuter
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...S.goalBarFill,
+      width: `${pct}%`,
+      background: reached ? teal : "#FF9EB0"
+    }
+  })), /*#__PURE__*/React.createElement("div", {
+    style: S.calcRow
+  }, /*#__PURE__*/React.createElement("span", null, "เก็บแล้ว ", baht(goal.saved)), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: muted
+    }
+  }, "เป้า ", baht(goal.target))), reached ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...S.msHint,
+      marginTop: 4
+    }
+  }, "🎉 ถึงเป้าหมายแล้ว เก่งมากๆ น้า!") : monthsToGo && /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...S.muted2,
+      marginTop: 4
+    }
+  }, "ถ้าเก็บเดือนละเท่าเงินเหลือใช้ตอนนี้ (", baht(free), ") จะถึงเป้าในอีกประมาณ ", monthsToGo, " เดือน"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      marginTop: 8,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...S.fixedAmtWrap,
+      flex: 1,
+      background: "#fff"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: S.bahtSignSm
+  }, "฿"), /*#__PURE__*/React.createElement("input", {
+    style: S.fixedAmt,
+    type: "number",
+    inputMode: "numeric",
+    value: addAmt,
+    onChange: e => setAddAmt(e.target.value),
+    placeholder: "เพิ่มเงินที่เก็บได้"
+  })), /*#__PURE__*/React.createElement("button", {
+    style: S.rowAdd,
+    onClick: submitAdd,
+    "aria-label": "เพิ่ม"
+  }, "+")));
 }
 
 /* ============================ installments ============================ */
@@ -2181,6 +2536,7 @@ function PayForm({
 function History({
   item,
   onDel,
+  onEditDate,
   onClose
 }) {
   const list = [...(item.payments || [])].sort((a, b) => a.date < b.date ? 1 : -1);
@@ -2189,7 +2545,12 @@ function History({
     onClose: onClose
   }, list.length === 0 ? /*#__PURE__*/React.createElement("div", {
     style: S.hint
-  }, "ยังไม่มีรายการจ่าย") : /*#__PURE__*/React.createElement("div", {
+  }, "ยังไม่มีรายการจ่าย") : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...S.muted2,
+      marginBottom: 10
+    }
+  }, "แก้วันที่ได้ถ้าบันทึกย้อนหลัง — แตะที่วันที่เพื่อแก้"), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       flexDirection: "column",
@@ -2209,11 +2570,21 @@ function History({
       fontFamily: "'IBM Plex Mono', monospace"
     }
   }, bahtExact(p.amount)), /*#__PURE__*/React.createElement("div", {
-    style: S.histMeta
-  }, p.date, " · ", p.note)), /*#__PURE__*/React.createElement("button", {
+    style: {
+      ...S.histMeta,
+      display: "flex",
+      alignItems: "center",
+      gap: 4
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "date",
+    value: p.date,
+    onChange: e => e.target.value && onEditDate(p.id, e.target.value),
+    style: S.histDateInput
+  }), " · ", p.note)), /*#__PURE__*/React.createElement("button", {
     style: S.rowDel,
     onClick: () => onDel(p.id)
-  }, "✕")))));
+  }, "✕"))))));
 }
 function Confirm({
   name,
@@ -2254,12 +2625,13 @@ function ImportConfirm({
   const sal = data?.budget?.salary || 0;
   const fx = (data?.budget?.fixed || []).length;
   const inc = (data?.budget?.income || []).length;
+  const sg = (data?.budget?.savingsGoals || []).length;
   return /*#__PURE__*/React.createElement(Sheet, {
     title: "นำเข้าข้อมูลนี้?",
     onClose: onClose
   }, /*#__PURE__*/React.createElement("div", {
     style: S.hint
-  }, "ไฟล์นี้มี: รายการผ่อน ", n, " รายการ · เงินเดือน ", baht(sal), " · ค่าใช้จ่ายประจำ ", fx, " รายการ · รายรับเพิ่มเติม ", inc, " รายการ", /*#__PURE__*/React.createElement("br", null), "การนำเข้าจะแทนที่ข้อมูลปัจจุบันทั้งหมดในเครื่องนี้ และเอาคืนไม่ได้"), /*#__PURE__*/React.createElement("div", {
+  }, "ไฟล์นี้มี: รายการผ่อน ", n, " รายการ · เงินเดือน ", baht(sal), " · ค่าใช้จ่ายประจำ ", fx, " รายการ · รายรับเพิ่มเติม ", inc, " รายการ · เป้าหมายออม ", sg, " เป้า", /*#__PURE__*/React.createElement("br", null), "การนำเข้าจะแทนที่ข้อมูลปัจจุบันทั้งหมดในเครื่องนี้ และเอาคืนไม่ได้"), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 12,
@@ -2281,6 +2653,7 @@ function ImportConfirm({
 }
 function BackupCard({
   onExport,
+  onExportCSV,
   onPickFile,
   error
 }) {
@@ -2309,7 +2682,19 @@ function BackupCard({
       flex: "1 1 140px"
     },
     onClick: onPickFile
-  }, "⬆️ นำเข้าไฟล์")), error && /*#__PURE__*/React.createElement("div", {
+  }, "⬆️ นำเข้าไฟล์")), /*#__PURE__*/React.createElement("button", {
+    style: {
+      ...S.ghostBig,
+      width: "100%",
+      marginTop: 10
+    },
+    onClick: onExportCSV
+  }, "📊 ส่งออกประวัติการจ่ายเป็น Excel/CSV"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...S.muted2,
+      marginTop: 6
+    }
+  }, "ไฟล์ .csv เปิดได้ด้วย Excel, Google Sheets, Numbers"), error && /*#__PURE__*/React.createElement("div", {
     style: S.warnNeg
   }, error));
 }
@@ -3286,6 +3671,16 @@ const S = {
     fontSize: 12,
     color: muted
   },
+  histDateInput: {
+    border: "none",
+    background: "transparent",
+    color: muted,
+    fontSize: 12,
+    fontFamily: "inherit",
+    padding: 0,
+    margin: 0,
+    width: 96
+  },
   calcBox: {
     background: "#FFF7EF",
     border: `1.5px solid ${line}`,
@@ -3302,6 +3697,47 @@ const S = {
     alignItems: "baseline",
     fontSize: 14,
     color: ink
+  },
+  dueBanner: {
+    background: "#FFE9EE",
+    border: "2px dashed #FF9EB0",
+    borderRadius: 16,
+    padding: "12px 14px",
+    marginBottom: 14
+  },
+  dueBannerHead: {
+    fontSize: 14.5,
+    fontWeight: 700,
+    color: "#E0617D",
+    marginBottom: 8
+  },
+  dueChipsRow: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 8
+  },
+  dueChip: {
+    ...num,
+    background: "#fff",
+    border: "2px solid #FF9EB0",
+    borderRadius: 999,
+    padding: "7px 12px",
+    fontSize: 13,
+    fontWeight: 700,
+    color: "#E0617D"
+  },
+  goalBarOuter: {
+    width: "100%",
+    height: 14,
+    background: "#F1E5DC",
+    borderRadius: 999,
+    overflow: "hidden",
+    marginBottom: 8
+  },
+  goalBarFill: {
+    height: "100%",
+    borderRadius: 999,
+    transition: "width 0.3s ease"
   }
 };
 ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
