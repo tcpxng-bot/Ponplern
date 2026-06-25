@@ -1,0 +1,15 @@
+{
+  "name": "ผ่อนเพลิน",
+  "short_name": "ผ่อนเพลิน",
+  "description": "วางแผนการผ่อนและเงินเหลือใช้ พร้อมน้องผ่อนเพลิน",
+  "lang": "th",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#FFF4EC",
+  "theme_color": "#FFF4EC",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
