@@ -445,7 +445,7 @@ function App() {
     style: {
       color: muted
     }
-  }, "→"), tab === "home" && /*#__PURE__*/React.createElement(DreamWidget, { goals: budget.savingsGoals||[], onSave: () => { var g=dreamNearest(budget.savingsGoals||[]); if(g) setModal({type:"quickSaveDream", goal:g}); }, onGoToDreams: () => setTab("savings") }), tab === "home" && salary > 0 && /*#__PURE__*/React.createElement(FinancialScoreCard, { score: calcFinancialScore(totalIn, fixedTotal, instTotal, free, budget.savingsGoals||[], items), streak: calcStreak(items), nextItem: items.filter(it=>!isDone(it))[0]||null, goals: budget.savingsGoals||[], salary: salary, free: free })), tab === "analytics" && /*#__PURE__*/React.createElement(Analytics, {
+  }, "→")), tab === "home" && /*#__PURE__*/React.createElement(DreamWidget, { goals: budget.savingsGoals||[], onSave: () => { var g=dreamNearest(budget.savingsGoals||[]); if(g) setModal({type:"quickSaveDream", goal:g}); }, onGoToDreams: () => setTab("savings") }), tab === "home" && salary > 0 && /*#__PURE__*/React.createElement(FinancialScoreCard, { score: calcFinancialScore(totalIn, fixedTotal, instTotal, free, budget.savingsGoals||[], items), streak: calcStreak(items), nextItem: items.filter(it=>!isDone(it))[0]||null, goals: budget.savingsGoals||[], salary: salary, free: free }), tab === "analytics" && /*#__PURE__*/React.createElement(Analytics, {
     totalIn: totalIn,
     salary: salary,
     incomeTotal: incomeTotal,
