@@ -211,7 +211,6 @@ function App() {
     ...b,
     savingsGoals: (b.savingsGoals || []).filter(g => g.id !== id)
   }));
-  const setMood = (ym, mood) => setBudget(b => ({ ...b, moods: { ...(b.moods || {}), [ym]: mood } }));
   const addDream = (data) => setBudget(b => ({ ...b, savingsGoals: [...(b.savingsGoals || []), { id: uid(), saved: 0, ...data }] }));
   const updateGoal = (id, patch) => setBudget(b => ({ ...b, savingsGoals: (b.savingsGoals || []).map(g => g.id === id ? { ...g, ...patch } : g) }));
 
@@ -425,23 +424,7 @@ function App() {
     style: S.mascotName
   }, "น้องผ่อนเพลิน"), /*#__PURE__*/React.createElement("div", {
     style: S.bubble
-  }, ploenSay(free, totalIn, instTotal).msg))))), tab === "home" && salary > 0 && /*#__PURE__*/React.createElement(InsightDeck, {
-    ctx: {
-      salary: salary,
-      totalIn: totalIn,
-      fixedTotal: fixedTotal,
-      instTotal: instTotal,
-      free: free,
-      freeSafe: freeSafe,
-      irregularTotal: incomeIrregularTotal,
-      irregularNames: incomeList.filter(f => f.irregular).map(f => f.name).join(", "),
-      items: items,
-      goals: budget.savingsGoals || [],
-      streak: calcStreak(items),
-      score: calcFinancialScore(totalIn, fixedTotal, instTotal, free, budget.savingsGoals || [], items)
-    },
-    onNav: setTab
-  }), tab === "home" && /*#__PURE__*/React.createElement(IncomeList, {
+  }, ploenSay(free, totalIn, instTotal).msg))))), tab === "home" && /*#__PURE__*/React.createElement(IncomeList, {
     income: budget.income || [],
     total: incomeTotal,
     onAdd: addIncome,
@@ -472,17 +455,6 @@ function App() {
     items: items
   }), tab === "analytics" && salary >= 0 && /*#__PURE__*/React.createElement(MonthlySummary, {
     items: items
-  }), tab === "analytics" && /*#__PURE__*/React.createElement(MonthlyReflection, {
-    items: items,
-    score: calcFinancialScore(totalIn, fixedTotal, instTotal, free, budget.savingsGoals || [], items),
-    free: free,
-    instTotal: instTotal,
-    moods: budget.moods || {},
-    onSetMood: setMood
-  }), tab === "analytics" && /*#__PURE__*/React.createElement(FinancialJourney, {
-    items: items,
-    goals: budget.savingsGoals || [],
-    streak: calcStreak(items)
   }), tab === "savings" && /*#__PURE__*/React.createElement(DreamBoard, {
     goals: budget.savingsGoals || [],
     onAdd: addDream,
@@ -652,3 +624,5 @@ function App() {
 }
 const knownCards = items => [...new Set(items.map(i => (i.card || "").trim()).filter(Boolean))];
 
+
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
